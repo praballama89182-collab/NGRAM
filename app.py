@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="Prabal Ecommerce Analyzer",
     page_icon="🛒",
@@ -10,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 2. THEME-NEUTRAL CSS ---
+# --- THEME-NEUTRAL CSS ---
 st.markdown("""
     <style>
     .stMetric { 
@@ -33,30 +33,8 @@ def normalize_match_type(val):
 
 def generate_ngrams(text, n):
     words = str(text).lower().split()
-    if len(words) < n:
-        return []
+    if len(words) < n: return []
     return [' '.join(words[i:i+n]) for i in range(len(words)-n+1)]
-
-def process_ngrams(df, n_value):
-    ngram_data = []
-    for _, row in df.iterrows():
-        term = row['Search Term']
-        grams = generate_ngrams(term, n_value)
-        for gram in grams:
-            ngram_data.append({
-                'N-Gram': gram,
-                'Spend': row['Spend'],
-                'Sales': row['Sales'],
-                'Orders': row['Orders'],
-                'Clicks': row['Clicks']
-            })
-    if not ngram_data: return pd.DataFrame()
-    ng_df = pd.DataFrame(ngram_data)
-    ng_agg = ng_df.groupby('N-Gram', as_index=False).sum()
-    ng_agg['ROAS'] = ng_agg.apply(lambda x: x['Sales']/x['Spend'] if x['Spend'] > 0 else 0, axis=1)
-    ng_agg['ACOS'] = ng_agg.apply(lambda x: (x['Spend']/x['Sales'])*100 if x['Sales'] > 0 else 0, axis=1)
-    ng_agg['Count'] = ng_df.groupby('N-Gram').size().values 
-    return ng_agg.sort_values(by='Spend', ascending=False).round(2)
 
 def to_excel(dfs):
     output = io.BytesIO()
@@ -69,100 +47,103 @@ def to_excel(dfs):
 def main():
     with st.sidebar:
         st.title("🛒 Prabal Analyzer")
+        st.markdown("---")
         uploaded_file = st.file_uploader("Upload Search Term Report", type=["csv", "xlsx"])
+        
         df = None
         if uploaded_file:
             try:
-                if uploaded_file.name.endswith('.csv'): 
-                    df_raw = pd.read_csv(uploaded_file)
-                else: 
-                    # Ensure you have openpyxl installed to read .xlsx
-                    df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
-                
+                if uploaded_file.name.endswith('.csv'): df_raw = pd.read_csv(uploaded_file)
+                else: df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
                 df_raw.columns = df_raw.columns.str.strip()
-                
-                # Portfolio Filtering
-                port_col = next((c for c in df_raw.columns if 'Portfolio' in c), None)
-                if port_col:
-                    all_portfolios = df_raw[port_col].dropna().unique().tolist()
-                    selected_ports = st.multiselect("Select Portfolios", options=all_portfolios, default=all_portfolios)
-                    if selected_ports:
-                        df = df_raw[df_raw[port_col].isin(selected_ports)].copy()
-                    else:
-                        df = df_raw.copy()
-                else:
-                    df = df_raw.copy()
-            except Exception as e: 
-                st.error(f"Error loading file: {e}")
+                df = df_raw.copy()
+            except Exception as e: st.error(f"Error: {e}")
+
+        if df is not None:
+            st.markdown("### ⚙️ Thresholds")
+            acos_limit = st.slider("ACOS Friendly Threshold (%)", 5, 50, 20, 5)
+            waste_threshold = st.number_input("Wasted Spend Min ($/₹)", 50, 5000, 200)
 
     if df is not None:
         try:
             # Column Mapping
             col_map = {
                 'term': next((c for c in df.columns if 'Customer Search Term' in c or 'Matched product' in c), 'Search Term'),
+                'camp': next((c for c in df.columns if 'Campaign Name' in c), 'Campaign'),
+                'adg': next((c for c in df.columns if 'Ad Group Name' in c), 'Ad Group'),
+                'match': next((c for c in df.columns if 'Match Type' in c), 'Match Type'),
                 'spend': next((c for c in df.columns if 'Spend' in c), 'Spend'),
                 'sales': next((c for c in df.columns if 'Sales' in c), 'Sales'),
                 'orders': next((c for c in df.columns if 'Orders' in c), 'Orders'),
                 'clicks': next((c for c in df.columns if 'Clicks' in c), 'Clicks')
             }
             
-            # Clean numeric data
             for key in ['spend', 'sales', 'orders', 'clicks']:
                 df[col_map[key]] = pd.to_numeric(df[col_map[key]], errors='coerce').fillna(0)
+            df['norm_match'] = df[col_map['match']].apply(normalize_match_type)
 
-            # Aggregation for Dashboard
-            df_agg = df.groupby(col_map['term'], as_index=False).agg({
-                col_map['spend']: 'sum', 
-                col_map['sales']: 'sum', 
-                col_map['orders']: 'sum', 
-                col_map['clicks']: 'sum'
+            # Aggregation including Campaign/AdGroup for Wasted Spend
+            df_agg = df.groupby([col_map['term'], col_map['camp'], col_map['adg'], 'norm_match'], as_index=False).agg({
+                col_map['spend']: 'sum', col_map['sales']: 'sum', col_map['orders']: 'sum', col_map['clicks']: 'sum'
             }).rename(columns={
-                col_map['term']: 'Search Term', 
-                col_map['spend']: 'Spend', 
-                col_map['sales']: 'Sales', 
-                col_map['orders']: 'Orders', 
-                col_map['clicks']: 'Clicks'
+                col_map['term']: 'Search Term', col_map['camp']: 'Campaign', col_map['adg']: 'Ad Group',
+                col_map['spend']: 'Spend', col_map['sales']: 'Sales', col_map['orders']: 'Orders', col_map['clicks']: 'Clicks'
             })
             
-            df_agg['ROAS'] = (df_agg['Sales'] / df_agg['Spend']).fillna(0).round(2)
-            df_agg['ACOS'] = (df_agg['Spend'] / df_agg['Sales'] * 100).fillna(0).round(2)
-            
-            # --- DASHBOARD TABS ---
+            df_agg['ACOS'] = (df_agg['Spend'] / df_agg['Sales'] * 100).fillna(0).round(1)
+            df_agg['ROAS'] = (df_agg['Sales'] / df_agg['Spend']).fillna(0).round(1)
+
+            # --- TABS ---
             st.title("Prabal Ecommerce Analyzer")
-            tabs = st.tabs(["📊 Overview", "🔠 N-Gram Analysis", "💸 Wasted Spend"])
+            tabs = st.tabs(["📊 Overview", "🚀 Strategy Center", "🔠 N-Gram Analysis", "💸 Wasted Spend"])
             
             with tabs[0]:
                 c1, c2, c3 = st.columns(3)
-                total_spend = df_agg['Spend'].sum()
-                total_sales = df_agg['Sales'].sum()
-                total_acos = (total_spend / total_sales * 100) if total_sales > 0 else 0
-                
-                # FIXED FORMATTING HERE
-                c1.metric("Total Spend", f"₹{total_spend:,.2f}")
-                c2.metric("Total Sales", f"₹{total_sales:,.2f}")
-                c3.metric("Account ACOS", f"{total_acos:,.2f}%")
-                
-                st.dataframe(df_agg.sort_values(by='Spend', ascending=False), use_container_width=True)
+                c1.metric("Total Spend", f"₹{df_agg['Spend'].sum():,.1f}")
+                c2.metric("Total Sales", f"₹{df_agg['Sales'].sum():,.1f}")
+                total_acos = (df_agg['Spend'].sum() / df_agg['Sales'].sum() * 100) if df_agg['Sales'].sum() > 0 else 0
+                c3.metric("Account ACOS", f"{total_acos:.1f}%")
+                st.dataframe(df_agg.sort_values(by='Sales', ascending=False), use_container_width=True)
 
             with tabs[1]:
-                n_val = st.radio("Gram Size", [1, 2, 3, 4], horizontal=True)
-                ngram_df = process_ngrams(df_agg, n_val)
-                st.dataframe(ngram_df, use_container_width=True)
+                st.subheader("🏆 Top Performers by Match Type")
+                st.caption(f"Showing Top 10 terms with ACOS $\le$ {acos_limit}%")
+                
+                for mt in ['EXACT', 'PHRASE', 'BROAD']:
+                    st.markdown(f"#### 🎯 {mt.title()} Match")
+                    mt_df = df_agg[df_agg['norm_match'] == mt]
+                    
+                    t1, t2 = st.columns(2)
+                    with t1:
+                        st.markdown("**💰 Top 10 Grossing (Sales)**")
+                        st.dataframe(mt_df.nlargest(10, 'Sales')[['Search Term', 'Sales', 'ACOS', 'Orders']], use_container_width=True)
+                    with t2:
+                        st.markdown(f"**🌱 Top 10 ACOS Friendly ($\le$ {acos_limit}%)**")
+                        st.dataframe(mt_df[(mt_df['Sales'] > 0) & (mt_df['ACOS'] <= acos_limit)].nsmallest(10, 'ACOS')[['Search Term', 'Sales', 'ACOS', 'Orders']], use_container_width=True)
 
             with tabs[2]:
-                waste = df_agg[(df_agg['Orders'] == 0) & (df_agg['Spend'] > 0)].sort_values(by='Spend', ascending=False)
-                st.dataframe(waste, use_container_width=True)
+                n_val = st.radio("Gram Size", [1, 2, 3, 4], horizontal=True)
+                ngram_data = []
+                for _, row in df_agg.iterrows():
+                    grams = generate_ngrams(row['Search Term'], n_val)
+                    for g in grams:
+                        ngram_data.append({'N-Gram': g, 'Spend': row['Spend'], 'Sales': row['Sales'], 'Orders': row['Orders']})
+                if ngram_data:
+                    ng_df = pd.DataFrame(ngram_data).groupby('N-Gram', as_index=False).sum()
+                    ng_df['ACOS'] = (ng_df['Spend'] / ng_df['Sales'] * 100).fillna(0).round(1)
+                    st.dataframe(ng_df.sort_values(by='Spend', ascending=False), use_container_width=True)
+
+            with tabs[3]:
+                st.subheader("💸 Wasted Spend (Zero Orders)")
+                waste = df_agg[(df_agg['Orders'] == 0) & (df_agg['Spend'] >= waste_threshold)].sort_values(by='Spend', ascending=False)
+                st.dataframe(waste[['Search Term', 'Campaign', 'Ad Group', 'Spend', 'Clicks']], use_container_width=True)
 
             # Export
-            export_dfs = {"Summary": df_agg, "N-Grams": ngram_df}
-            st.download_button("📥 Download Master Report", 
-                               data=to_excel(export_dfs), 
-                               file_name="PPC_Master_Report.xlsx")
+            st.download_button("📥 Download Master Report", data=to_excel({"Summary": df_agg}), file_name="Prabal_Report.xlsx")
 
-        except Exception as e: 
-            st.error(f"Processing Error: {e}")
+        except Exception as e: st.error(f"Error: {e}")
     else:
-        st.info("👋 Welcome! Please upload your report in the sidebar to begin.")
+        st.info("👋 Welcome! Please upload your report to start the analyzer.")
 
 if __name__ == "__main__":
     main()
