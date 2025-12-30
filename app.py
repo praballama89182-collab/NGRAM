@@ -73,21 +73,31 @@ def main():
         df = None
         if uploaded_file:
             try:
-                if uploaded_file.name.endswith('.csv'): df_raw = pd.read_csv(uploaded_file)
-                else: df_raw = pd.read_excel(uploaded_file)
+                if uploaded_file.name.endswith('.csv'): 
+                    df_raw = pd.read_csv(uploaded_file)
+                else: 
+                    # Ensure you have openpyxl installed to read .xlsx
+                    df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
+                
                 df_raw.columns = df_raw.columns.str.strip()
+                
+                # Portfolio Filtering
                 port_col = next((c for c in df_raw.columns if 'Portfolio' in c), None)
                 if port_col:
                     all_portfolios = df_raw[port_col].dropna().unique().tolist()
                     selected_ports = st.multiselect("Select Portfolios", options=all_portfolios, default=all_portfolios)
-                    df = df_raw[df_raw[port_col].isin(selected_ports)].copy() if selected_ports else df_raw.copy()
+                    if selected_ports:
+                        df = df_raw[df_raw[port_col].isin(selected_ports)].copy()
+                    else:
+                        df = df_raw.copy()
                 else:
                     df = df_raw.copy()
-            except Exception as e: st.error(f"Error: {e}")
+            except Exception as e: 
+                st.error(f"Error loading file: {e}")
 
     if df is not None:
         try:
-            # Column Mapping & Cleaning
+            # Column Mapping
             col_map = {
                 'term': next((c for c in df.columns if 'Customer Search Term' in c or 'Matched product' in c), 'Search Term'),
                 'spend': next((c for c in df.columns if 'Spend' in c), 'Spend'),
@@ -102,8 +112,17 @@ def main():
 
             # Aggregation for Dashboard
             df_agg = df.groupby(col_map['term'], as_index=False).agg({
-                col_map['spend']: 'sum', col_map['sales']: 'sum', col_map['orders']: 'sum', col_map['clicks']: 'sum'
-            }).rename(columns={col_map['term']: 'Search Term', col_map['spend']: 'Spend', col_map['sales']: 'Sales', col_map['orders']: 'Orders', col_map['clicks']: 'Clicks'})
+                col_map['spend']: 'sum', 
+                col_map['sales']: 'sum', 
+                col_map['orders']: 'sum', 
+                col_map['clicks']: 'sum'
+            }).rename(columns={
+                col_map['term']: 'Search Term', 
+                col_map['spend']: 'Spend', 
+                col_map['sales']: 'Sales', 
+                col_map['orders']: 'Orders', 
+                col_map['clicks']: 'Clicks'
+            })
             
             df_agg['ROAS'] = (df_agg['Sales'] / df_agg['Spend']).fillna(0).round(2)
             df_agg['ACOS'] = (df_agg['Spend'] / df_agg['Sales'] * 100).fillna(0).round(2)
@@ -114,10 +133,15 @@ def main():
             
             with tabs[0]:
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Total Spend", f"₹{df_agg['Spend'].sum():,.2).format(df_agg['Spend'].sum())}")
-                c2.metric("Total Sales", f"₹{df_agg['Sales'].sum():,.2).format(df_agg['Sales'].sum())}")
-                total_acos = (df_agg['Spend'].sum() / df_agg['Sales'].sum() * 100) if df_agg['Sales'].sum() > 0 else 0
-                c3.metric("Account ACOS", f"{total_acos:.2f}%")
+                total_spend = df_agg['Spend'].sum()
+                total_sales = df_agg['Sales'].sum()
+                total_acos = (total_spend / total_sales * 100) if total_sales > 0 else 0
+                
+                # FIXED FORMATTING HERE
+                c1.metric("Total Spend", f"₹{total_spend:,.2f}")
+                c2.metric("Total Sales", f"₹{total_sales:,.2f}")
+                c3.metric("Account ACOS", f"{total_acos:,.2f}%")
+                
                 st.dataframe(df_agg.sort_values(by='Spend', ascending=False), use_container_width=True)
 
             with tabs[1]:
@@ -130,9 +154,13 @@ def main():
                 st.dataframe(waste, use_container_width=True)
 
             # Export
-            st.download_button("📥 Download Master Report", data=to_excel({"Summary": df_agg, "N-Grams": ngram_df}), file_name="PPC_Report.xlsx")
+            export_dfs = {"Summary": df_agg, "N-Grams": ngram_df}
+            st.download_button("📥 Download Master Report", 
+                               data=to_excel(export_dfs), 
+                               file_name="PPC_Master_Report.xlsx")
 
-        except Exception as e: st.error(f"Processing Error: {e}")
+        except Exception as e: 
+            st.error(f"Processing Error: {e}")
     else:
         st.info("👋 Welcome! Please upload your report in the sidebar to begin.")
 
